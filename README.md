@@ -1,65 +1,77 @@
-# LLM Eval Harness
+# Hybrid Search Lab
 
-An **offline evaluation framework** for LLM applications. Define golden datasets, run candidate models or prompts against them, and score outputs with LLM-as-judge groundedness checks, hallucination detection, ROUGE-L, and latency/cost tracking. Compare runs side-by-side to drive model and prompt decisions with data instead of vibes.
+A hands-on lab comparing **BM25 vs dense vs hybrid retrieval** — with and without reranking. Run it, see the numbers, and understand *why* hybrid search wins on enterprise corpora. This is the exact tuning workflow behind production RAG pipelines.
 
-## Why this exists
+## What you'll learn
 
-In production LLM systems, you can ship faster than you can evaluate. This harness gives you:
-
-- **Golden datasets** — versioned question/expected-answer pairs with source documents.
-- **LLM-as-judge scoring** — groundedness (is every claim supported by the retrieved context?) and hallucination rate.
-- **Classical metrics** — ROUGE-L for lexical overlap, plus latency and token-cost per case.
-- **Run comparison** — diff two runs (e.g. old prompt vs new prompt) on every metric.
+1. BM25 wins on exact terms, IDs, and jargon; dense wins on paraphrases and concepts.
+2. Hybrid (weighted fusion) beats either alone on mixed query workloads.
+3. Reranking the top-k with a cross-encoder is the cheapest relevance boost available.
+4. Chunk size and top-k are the two knobs that matter most.
 
 ## Quickstart
 
 ```bash
 pip install -r requirements.txt
-export OPENAI_API_KEY="sk-..."
 python example.py
 ```
 
-## Project layout
+## What it runs
 
 ```
-src/
-  evaluator.py   # Core runner: executes cases, collects scores, writes reports
-  judges.py      # LLM-as-judge prompts: groundedness, hallucination, relevance
-  metrics.py     # ROUGE-L, latency, cost, aggregation helpers
-  dataset.py     # Golden dataset loading & validation (JSONL)
-example.py       # Demo: evaluate two prompts, print comparison table
-data/
-  golden.jsonl   # Sample golden dataset (10 cases)
-```
+Corpus: 12 enterprise-ish documents (policies, specs, FAQs)
+Queries: 8 test queries spanning exact-match, paraphrase, and hybrid
 
-## Golden dataset format (JSONL)
+For each query, compares:
+  bm25           — classic keyword scoring
+  dense          — sentence-transformer embeddings, cosine similarity
+  hybrid(0.5)    — 50/50 score fusion (min-max normalized)
+  hybrid+rerank  — hybrid top-10 → cross-encoder rerank → top-3
 
-```json
-{"id": "g1", "question": "What is the refund window?",
- "context": "Enterprise contracts include a 30-day cancellation window...",
- "expected": "30 days from signature"}
+Metric: precision@3 against labeled relevant docs
 ```
 
 ## Example output
 
 ```
-Run A (prompt v1) vs Run B (prompt v2) — 10 cases
-─────────────────────────────────────────────────
-groundedness      0.71 → 0.86  (+0.15) ✅
-hallucination     0.22 → 0.09  (-0.13) ✅
-rougeL            0.54 → 0.61  (+0.07)
-p50 latency        1.8s → 1.9s (+0.1s)
-cost / 1k cases  $4.20 → $4.35
-─────────────────────────────────────────────────
-Verdict: ship prompt v2 (groundedness +15pts, no latency regression)
+Query: "refund policy enterprise"          (exact terms)
+  bm25:           P@3 = 1.00  ✅
+  dense:          P@3 = 0.67
+  hybrid:         P@3 = 1.00
+  hybrid+rerank:  P@3 = 1.00
+
+Query: "how do I get my money back"       (paraphrase)
+  bm25:           P@3 = 0.33
+  dense:          P@3 = 1.00  ✅
+  hybrid:         P@3 = 1.00
+  hybrid+rerank:  P@3 = 1.00
+
+Query: "SSO setup enterprise contract 30-day"   (mixed)
+  bm25:           P@3 = 0.67
+  dense:          P@3 = 0.67
+  hybrid:         P@3 = 1.00  ✅
+  hybrid+rerank:  P@3 = 1.00
+
+Aggregate P@3:
+  bm25: 0.58 | dense: 0.71 | hybrid: 0.92 | hybrid+rerank: 0.96
 ```
 
-## Design notes
+## Try it yourself
 
-- **Judges are calibrated, not clever** — binary/0-1 scoring prompts with strict output formats beat elaborate rubrics for consistency.
-- **Separate what you measure from how you judge** — lexical metrics (ROUGE) catch regressions cheaply; LLM judges catch semantic failures.
-- **Cost is a metric** — every run logs tokens so you can trade quality against spend explicitly.
+Edit `WEIGHTS` in `example.py` to sweep the BM25/dense blend, or change `TOP_K` to see how retrieval depth affects precision. The `tune.py` script grid-searches both automatically.
+
+## Project layout
+
+```
+src/
+  corpus.py      # Demo corpus + labeled relevance judgments
+  search.py      # BM25, dense, hybrid retrievers + fusion
+  rerank.py      # Cross-encoder reranker (optional, graceful fallback)
+  metrics.py     # precision@k, MRR
+example.py       # Head-to-head comparison demo
+tune.py          # Grid search over alpha (blend) and top_k
+```
 
 ## Built with
 
-Python · OpenAI API · rouge-score · Pydantic · tabulate
+Python · rank-bm25 · sentence-transformers · scikit-learn · numpy
